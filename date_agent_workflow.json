@@ -1,0 +1,124 @@
+{
+  "name": "Date Suggestion Agent",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "date",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "node-webhook",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// This node plays the role of db.py + get_user_by_name() + get_user_matches()\n// In a real app, these would be database queries.\n// For the workshop, we hardcode the same data from db.py\n\nconst profiles = [\n  { user_id: 'user-1', name: 'Alice', age: 28, gender: 'woman', looking_for: 'relationship', bio: 'I love hiking, cooking, and reading sci-fi.', latitude: 40.7128, longitude: -74.0060 },\n  { user_id: 'user-2', name: 'Bob',   age: 30, gender: 'man',   looking_for: 'relationship', bio: 'Big fan of hiking, board games, and cooking new recipes.', latitude: 40.7580, longitude: -73.9855 },\n  { user_id: 'user-3', name: 'Charlie', age: 26, gender: 'man', looking_for: 'casual', bio: 'Coffee addict. Let\\'s find the best espresso in town.', latitude: 40.7306, longitude: -73.9866 },\n  { user_id: 'user-4', name: 'Diana', age: 29, gender: 'woman', looking_for: 'relationship', bio: 'Movie buff, love exploring art galleries and trying street food.', latitude: 40.7282, longitude: -73.9943 },\n  { user_id: 'user-5', name: 'Eve',   age: 24, gender: 'woman', looking_for: 'casual', bio: 'Looking for someone to go to live rock concerts with!', latitude: 40.7484, longitude: -73.9857 },\n  { user_id: 'user-6', name: 'Frank', age: 32, gender: 'man',   looking_for: 'relationship', bio: 'Quiet nights in, cooking pasta, and watching documentaries.', latitude: 40.7112, longitude: -74.0055 }\n];\n\nconst matches = [\n  { match_id: 'match-1', user1_id: 'user-1', user2_id: 'user-2' },\n  { match_id: 'match-2', user1_id: 'user-3', user2_id: 'user-5' }\n];\n\n// Get inputs from the webhook\nconst username  = $input.first().json.body.username;\nconst budget    = $input.first().json.body.budget;\nconst time      = $input.first().json.body.time;\nconst specification = $input.first().json.body.specification || 'None';\n\n// Find the user by name (same as get_user_by_name)\nconst user = profiles.find(p => p.name.toLowerCase() === username.toLowerCase());\nif (!user) {\n  throw new Error(`User '${username}' not found`);\n}\n\n// Find their match (same as get_user_matches)\nconst matchRecord = matches.find(m => m.user1_id === user.user_id || m.user2_id === user.user_id);\nif (!matchRecord) {\n  throw new Error(`No match found for user '${username}'`);\n}\n\nconst matchedUserId = matchRecord.user1_id === user.user_id ? matchRecord.user2_id : matchRecord.user1_id;\nconst matchedUser = profiles.find(p => p.user_id === matchedUserId);\n\nreturn [{ json: { user, matchedUser, budget, time, specification } }];\n"
+      },
+      "id": "node-lookup",
+      "name": "Look Up User & Match",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [480, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// This node replicates calculate_distance() from utils.py\n// It uses the Haversine formula — the correct way to measure\n// distance between two GPS coordinates on a sphere.\n\nconst { user, matchedUser, budget, time, specification } = $input.first().json;\n\nfunction haversineDistance(lat1, lon1, lat2, lon2) {\n  const R = 6371.0; // Earth radius in km\n  const toRad = deg => deg * Math.PI / 180;\n  const dlat  = toRad(lat2 - lat1);\n  const dlon  = toRad(lon2 - lon1);\n  const a = Math.sin(dlat/2)**2 +\n            Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dlon/2)**2;\n  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));\n  return Math.round(R * c * 100) / 100;\n}\n\nconst distance = haversineDistance(\n  user.latitude, user.longitude,\n  matchedUser.latitude, matchedUser.longitude\n);\n\nreturn [{ json: { user, matchedUser, distance, budget, time, specification } }];\n"
+      },
+      "id": "node-distance",
+      "name": "Calculate Distance",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [720, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// This node builds the prompt — same as what main.py does\n// when it assembles the `data` string before calling run()\n\nconst { user, matchedUser, distance, budget, time, specification } = $input.first().json;\n\nconst systemPrompt = `You are given the information about two people which includes the following:\nYour job is to suggest a date idea based on the above information provided and you must return the response in the following json format. No markdown only simple json as follows:\nOutput JSON only with this shape:\n{\n  \"suggestions\": [\n    {\n      \"title\": \"short title\",\n      \"plan\": \"1-3 sentence plan\",\n      \"why_it_fits\": \"1 sentence\",\n      \"location_hint\": \"concise location guidance\",\n      \"estimated_cost\": \"free | low | medium | high\",\n      \"ideal_time\": \"morning | afternoon | evening\"\n    }\n  ]\n}\nRules:\n- Output valid JSON only. No markdown.\n- Use the provided distance/location context to keep travel reasonable.\n- Avoid unsafe, illegal, or overly risky activities.\n- Do not invent specific real-world venues or addresses.\n- Respect preferences such as budget, time, outdoors, alcohol, accessibility, and dietary needs.\n- Keep suggestions varied and realistic.\nThe information about the user, his/her match and the date requirements is provided below:`;\n\nconst userContext = `\nThe complete data about user1 is ${JSON.stringify(user)} and his/her match is ${JSON.stringify(matchedUser)} and the distance between them is ${distance} km and the budget for the date is ${budget} and the time is ${time} and some other specifications include ${specification}`;\n\nconst fullPrompt = systemPrompt + userContext;\n\nreturn [{ json: { fullPrompt, user, matchedUser, distance, budget, time, specification } }];\n"
+      },
+      "id": "node-prompt",
+      "name": "Build Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [960, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpQueryAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"contents\": [\n    {\n      \"parts\": [\n        { \"text\": {{ JSON.stringify($json.fullPrompt) }} }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"temperature\": 0.7,\n    \"maxOutputTokens\": 1024\n  }\n}",
+        "options": {}
+      },
+      "id": "node-llm",
+      "name": "Call Gemini LLM",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1200, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// This node does the same cleanup as main.py:\n// raw_content.strip().strip('`').removeprefix('json').strip()\n// then JSON.parse() it\n\nconst rawText = $input.first().json.candidates[0].content.parts[0].text;\n\n// Strip markdown code fences if the LLM added them\nconst cleaned = rawText.replace(/```json|```/g, '').trim();\n\nlet parsed;\ntry {\n  parsed = JSON.parse(cleaned);\n} catch(e) {\n  throw new Error('Failed to parse LLM response as JSON. Raw response: ' + rawText);\n}\n\nreturn [{ json: parsed }];\n"
+      },
+      "id": "node-parse",
+      "name": "Parse LLM Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1440, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "node-respond",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1680, 300]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [{ "node": "Look Up User & Match", "type": "main", "index": 0 }]
+      ]
+    },
+    "Look Up User & Match": {
+      "main": [
+        [{ "node": "Calculate Distance", "type": "main", "index": 0 }]
+      ]
+    },
+    "Calculate Distance": {
+      "main": [
+        [{ "node": "Build Prompt", "type": "main", "index": 0 }]
+      ]
+    },
+    "Build Prompt": {
+      "main": [
+        [{ "node": "Call Gemini LLM", "type": "main", "index": 0 }]
+      ]
+    },
+    "Call Gemini LLM": {
+      "main": [
+        [{ "node": "Parse LLM Response", "type": "main", "index": 0 }]
+      ]
+    },
+    "Parse LLM Response": {
+      "main": [
+        [{ "node": "Respond to Webhook", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
